@@ -1,6 +1,6 @@
 ---
 name: android-release-signing
-description: Verify and fix Android release signing for Expo/React Native builds. Use when Play Console rejects an upload with "signed in debug mode", when a CI-built APK/AAB needs its signer certificate checked, when the withReleaseSigning config plugin seems to inject signing wrong, or when jarsigner vs apksigner verification is needed.
+description: Verify and fix Android release signing for any Expo/React Native build. Use when Play Console rejects an upload with "signed in debug mode", when a CI-built APK/AAB needs its signer certificate checked, when a release-signing config plugin seems to inject signing wrong, or when jarsigner vs apksigner verification is needed. Not project-specific.
 ---
 
 # Android release signing
@@ -56,12 +56,12 @@ whether it is debug or release.
 
 Check in order — the bug is almost always one of these:
 
-1. **Plugin not registered** — `withReleaseSigning` (or your signing plugin)
-   must be listed in `app.json` → `plugins`. Prebuild regenerates `android/`
+1. **Plugin not registered** — the release-signing config plugin must be
+   listed in `app.json` → `plugins` (Expo). Prebuild regenerates `android/`
    on every build, so any hand edit to `build.gradle` is lost.
 2. **Env vars missing at prebuild time** — the plugin is a **no-op** when
    `ANDROID_KEYSTORE_FILE/PASSWORD/ALIAS/KEY_PASSWORD` are absent. They must
-   be set on the `expo prebuild` step, sourced from GH secrets (never write
+   be set on the `expo prebuild` step, sourced from CI secrets (never write
    the keystore or password into the repo).
 3. **String-replace anchor bug** — a plugin that edits `build.gradle` by
    locating `release {` will match the **`signingConfigs.release` block it
@@ -114,7 +114,7 @@ CN (not "Android Debug"), confirmed by the CI verify step passing.
 - **Play Console wording → meaning**:
   - "signed in debug mode" → artifact used the debug keystore (plugin anchor / env / path bug, not the build itself)
   - any other upload error → read the full message; usually unrelated to signing
-- **Workflow pattern** (both `build-apk.yml` and `build-aab.yml`):
-  decode `ANDROID_KEYSTORE_BASE64` → `> release.keystore` → pass absolute path + passwords as env to `expo prebuild` → gradle build → verify step → upload.
-- The keystore itself must stay **outside the repo** (gitignored) and in GH
+- **Workflow pattern** (any repo with this setup):
+  decode the keystore secret (e.g. `ANDROID_KEYSTORE_BASE64`) → `> release.keystore` → pass absolute path + passwords as env to `expo prebuild` → gradle build → verify step → upload.
+- The keystore itself must stay **outside the repo** (gitignored) and in CI
   secrets — losing it means losing the ability to update the app.

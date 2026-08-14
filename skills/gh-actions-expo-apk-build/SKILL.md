@@ -1,6 +1,6 @@
 ---
 name: gh-actions-expo-apk-build
-description: Build an Expo React Native Android APK on GitHub Actions without EAS. Use when the user wants to build an APK/AAB from CI, set up a GitHub Actions workflow for expo prebuild + gradle assembleRelease, fix Android build failures in CI (Kotlin metadata mismatch, play-services-ads version conflicts, RNGMA/patch-package), download the APK artifact, or asks why the Android build fails with "incompatible version of Kotlin". Covers APK (debug-signed) vs AAB (Play Store) choices and native dependency pinning.
+description: Build an Expo React Native Android APK on GitHub Actions without EAS. Use when the user wants to build an APK/AAB from CI, set up a GitHub Actions workflow for expo prebuild + gradle assembleRelease, fix Android build failures in CI (Kotlin metadata mismatch, play-services-ads version conflicts, RNGMA/patch-package), download the APK artifact, or asks why the Android build fails with "incompatible version of Kotlin". Covers APK (release-signed via keystore, or debug-signed for quick tests) vs AAB (Play Store) choices and native dependency pinning. For signing/verify specifics (Play Console debug-mode rejections, apksigner vs jarsigner) see the android-release-signing skill.
 ---
 
 # GitHub Actions: Build Expo Android APK/AAB
@@ -16,12 +16,21 @@ Build a release Android APK for an Expo (React Native) app on GitHub Actions wit
 | Upload to Play Store (AAB, proper signing, Play App Signing) | EAS Build `production` profile |
 | Need iOS build | EAS Build (GH Actions has no macOS here) |
 
-APK built by this workflow is signed with the **debug keystore** — installable on devices, **not** store-submittable.
+APK built by this workflow is signed with the **debug keystore** by
+default — installable on devices. For a **release-signed** APK/AAB (needed
+for Play Console), pass the release keystore + signing plugin: see the
+`android-release-signing` skill (proven: GH Actions can produce
+release-signed artifacts without EAS).
 
 ## Decision order
 
-1. APK (test) → workflow below, no secrets needed.
-2. AAB (store) → **EAS Build production** — see `references/aab-play-store-signing.md` for the full flow (keystore, Play App Signing, `eas submit`). Do not sign production keys inside the GH Actions workflow.
+1. APK (test) → workflow below, no secrets needed (debug keystore) or with
+   keystore secrets for a release-signed APK.
+2. AAB (store) → sign with the project release keystore inside the workflow
+   (decode keystore secret → `expo prebuild` with signing plugin →
+   `./gradlew bundleRelease`). This works without EAS; see
+   `references/aab-play-store-signing.md` and the `android-release-signing`
+   skill. (EAS Build is an alternative if you prefer EAS-managed signing.)
 3. Build failing with a Kotlin/version error → read `references/troubleshooting.md` FIRST. These are the 5-fix failure modes that cost hours.
 
 ## Procedure (APK, test build)
@@ -70,13 +79,23 @@ Keep `GH_TOKEN` in an env var / shell export; never print it.
 Open `references/troubleshooting.md` — the Kotlin-metadata and version-pin section covers the exact failure ladder hit by react-native-google-mobile-ads 16.x on RN 0.86.
 
 ### 6. AAB / Play Store release
-Open `references/aab-play-store-signing.md` BEFORE building a store release. **The AAB steps run as the user, not the agent** — they need the user's EAS account login, `EXPO_TOKEN`, and Google Play Console service account, and can't be executed from an agent shell without those secrets. Guide the user through them instead. Quick path:
+Open `references/aab-play-store-signing.md` BEFORE building a store release. Two options:
+
+**Option A — release keystore in the GH Actions workflow (no EAS, proven).**
+Add keystore secrets (`ANDROID_KEYSTORE_BASE64/PASSWORD/ALIAS/KEY_PASSWORD`),
+decode them in the workflow, and run `expo prebuild` with a signing config
+plugin so `bundleRelease` produces a release-signed AAB. Full details +
+verify steps (jarsigner, not apksigner, for AAB) in the
+`android-release-signing` skill. Back up the keystore locally — losing it
+means losing the ability to update the app.
+
+**Option B — EAS Build.** `npx eas-cli build --platform android --profile production` — EAS generates/manages the upload keystore on its servers. Requires the user's `EXPO_TOKEN` (agent can't run it without it). Steps:
 
 1. Ensure `eas.json` has a `production` profile with `buildType: "app-bundle"` and `autoIncrement: true`.
-2. `npx eas-cli build --platform android --profile production` — EAS generates/manages the upload keystore on its servers.
+2. `npx eas-cli build --platform android --profile production`.
 3. **Back up the keystore**: `npx eas-cli credentials --platform android` → download `credentials.json` (gitignore it).
 4. Upload a Play service-account JSON to EAS credentials, then `npx eas-cli submit --platform android`.
-5. Never sign production keys inside the GH Actions workflow; never commit keystores.
+5. Never commit keystores.
 
 ## Reference routing
 
@@ -95,7 +114,7 @@ Open `references/aab-play-store-signing.md` BEFORE building a store release. **T
 
 ## AAB signing essentials
 
-- **Upload key vs App Signing key**: your keystore (EAS-managed) signs the AAB; Google's Play App Signing key re-signs user APKs. They must differ, and losing your upload key is recoverable (Google Play Support reset, with a 72-hour validity window) because Google holds the final key.
+- **Upload key vs App Signing key**: your keystore (project-managed in the workflow, or EAS-managed) signs the AAB; Google's Play App Signing key re-signs user APKs. They must differ, and losing your upload key is recoverable (Google Play Support reset, with a 72-hour validity window) because Google holds the final key.
 - **Back up the keystore immediately** after the first production build (`eas credentials` → download `credentials.json`); never commit it.
 - **`eas submit` needs a Google Play service-account JSON** (Release Manager permission) uploaded to EAS credentials.
 
