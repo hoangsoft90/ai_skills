@@ -3,7 +3,9 @@ name: expo-build-debug-apk-gh
 description: Build debug APK cho app Expo/React Native trên GitHub Actions (gradle trực tiếp, không EAS token) — push code lên branch build rồi tải APK debug về để test lỗi thật trên máy. Áp dụng chung cho MỌI project Expo/RN. Dùng khi user yêu cầu "build apk", "tải apk test", "thấy lỗi trên máy thật", "push build gh actions".
 ---
 
-# Build Debug APK qua GitHub Actions (app Expo/RN — dùng chung mọi project)
+# Build Debug APK qua GitHub Actions (app Expo/RN)
+
+Áp dụng chung cho mọi project Expo/React Native (không phụ thuộc repo).
 
 ## 1. ⚠️ BẮT BUỘC: debug APK phải nhúng JS bundle (nếu không app chết "Unable to load script")
 
@@ -17,13 +19,53 @@ Cách fix: config plugin chèn vào `react {}` block của `android/app/build.gr
 Kiểm tra plugin còn hoạt động trước mỗi lần push build:
 
 ```bash
-cd <project>            # thư mục app Expo (vd: apps/mobile)
+cd <project>            # vd: apps/mobile
 npx expo prebuild --platform android --no-install
 # PHẢI thấy debuggableVariants = [] (hoặc bundleInDebug = true theo RN version):
 grep -n -A4 "react {" android/app/build.gradle
 # PHẢI thấy applicationId + app_name đúng:
 grep -n "applicationId" android/app/build.gradle
 grep -n "app_name" android/app/src/main/res/values/strings.xml
+```
+
+## 1b. ⚠️ BẮT BUỘC: inject env CÔNG KHAI (`EXPO_PUBLIC_*`) vào workflow — thiếu env = APK build OK nhưng app lỗi runtime trên máy thật
+
+Bug thật đã gặp (Expo + Supabase): app cài lên phone **mở được bình thường nhưng không đăng ký/login được**, mọi call backend đều fail — vì APK build trên CI chứa **placeholder URL** (`https://placeholder.supabase.co`) do code có fallback khi `process.env.EXPO_PUBLIC_*` rỗng, mà `.env` bị gitignore nên CI build không có env nào được inject.
+
+### Nguyên nhân gốc
+
+- `EXPO_PUBLIC_*` được **inline vào JS bundle lúc build** — không có env trong CI = rỗng → rơi vào fallback (placeholder/rỗng) mà **không báo lỗi build**.
+- APK build thành công + mở được ≠ backend hoạt động. Lỗi chỉ lộ khi cài máy thật và thao tác (signup/login/fetch).
+
+### Cách fix (áp dụng chung mọi project Expo có backend)
+
+Inject các biến **công khai** vào `env:` của job build trong workflow:
+
+```yaml
+env:
+  EXPO_PUBLIC_SUPABASE_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL || 'https://<project-ref>.supabase.co' }}
+  EXPO_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.EXPO_PUBLIC_SUPABASE_ANON_KEY || 'eyJ...' }}
+  # ... mọi EXPO_PUBLIC_* khác (AdMob unit IDs, API public, v.v.)
+```
+
+- **`EXPO_PUBLIC_*` là public-by-design**: chúng nằm trong APK, ai giải nén cũng đọc được — KHÔNG phải secret thật, đặt giá trị fallback trực tiếp là OK. Lớp bảo vệ thật là RLS/server-side, không phải giấu key.
+- `secrets.X || 'fallback'` cho phép user override sau bằng repo secret nếu cần đổi môi trường, không cần sửa workflow.
+- **TUYỆT ĐỐI không inject secret thật** (service role key, token, DB password) vào env build — chúng sẽ nằm trong APK bị giải nén được.
+
+### Verify trước khi push (thêm vào checklist mục 2a)
+
+```bash
+# Workflow có đủ EXPO_PUBLIC_* cho app không?
+grep -n "EXPO_PUBLIC_" .github/workflows/<build>.yml
+# Mọi biến app đọc đều có trong workflow env (không chỗ nào rơi vào placeholder)
+```
+
+### Chẩn đoán nhanh khi app cài máy thật mà backend fail (không cần đọc code)
+
+```bash
+# APK có chứa placeholder/URL sai không?
+strings app-debug.apk | grep -iE "placeholder|localhost|http://" | head
+# Đối chiếu với URL backend thật của project
 ```
 
 ## 2. Quy trình (khi user muốn build APK test)
@@ -76,6 +118,7 @@ APK nằm trong artifact `<tên-artifact>` (`app-debug.apk`), signed bằng debu
 - **Build:** `./gradlew assembleDebug` (không cần keystore riêng — debug keystore mặc định của Gradle) — kèm bundle JS qua config plugin (mục 1)
 - **Upload:** `android/app/build/outputs/apk/debug/app-debug.apk`
 - **Bước chuẩn:** checkout → Node (LTS) → JDK 17 → Android SDK (accept licenses) → `npm ci` → `expo prebuild --platform android --clean --no-install` (CI=1) → `gradlew assembleDebug` → upload
+- **BẮT BUỘC có `env:`** với đủ `EXPO_PUBLIC_*` mà app đọc (mục 1b) — không inject thì app mở được nhưng signup/login/fetch đều fail (placeholder)
 - **KHÔNG dùng:** EAS token, keystore production, signing release
 - **Native config chỉ lộ lỗi khi build thật**: nếu build fail, đọc log step "Build debug APK" — các lỗi thường gặp: pin transitive dependency theo Kotlin metadata (xem skill `gh-actions-expo-apk-build`), property `react {}` sai theo RN version (mục 1).
 
